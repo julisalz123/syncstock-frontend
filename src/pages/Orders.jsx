@@ -21,8 +21,18 @@ export default function Orders() {
 
   const getStatusBadge = (status) => {
     const map = {
-      paid: 'badge-green', open: 'badge-blue', pending: 'badge-yellow',
-      cancelled: 'badge-red', fulfilled: 'badge-green'
+      // Verde — pagado/completado
+      paid: 'badge-green',
+      fulfilled: 'badge-green',
+      shipped: 'badge-green',
+      // Naranja — pendiente
+      open: 'badge-yellow',
+      pending: 'badge-yellow',
+      payment_required: 'badge-yellow',
+      payment_in_process: 'badge-yellow',
+      // Rojo — cancelado
+      cancelled: 'badge-red',
+      refunded: 'badge-red',
     };
     return map[status] || 'badge-gray';
   };
