@@ -1,56 +1,506 @@
-import axios from 'axios';
+import { useEffect, useState } from 'react';
+import { products as productsApi } from '../lib/api';
+import { Plus, Trash2, RefreshCw, Link2, ChevronDown, ChevronUp, Zap } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_URL || '/api';
+export default function Mappings() {
+  const [mappings, setMappings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [tnProducts, setTnProducts] = useState([]);
+  const [mlProducts, setMlProducts] = useState([]);
+  const [loadingTN, setLoadingTN] = useState(false);
+  const [loadingML, setLoadingML] = useState(false);
+  const [form, setForm] = useState({ tnVariantKey: '', mlItemId: '', mlVariationId: '' });
+  const [saving, setSaving] = useState(false);
+  const [syncingId, setSyncingId] = useState(null);
+  const [expandedLogs, setExpandedLogs] = useState(null);
+  const [logs, setLogs] = useState({});
+  const [syncAllLoading, setSyncAllLoading] = useState(false);
+  const [msg, setMsg] = useState('');
 
-const api = axios.create({ baseURL: API_BASE });
+  useEffect(() => { loadMappings(); }, []);
 
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token');
-  if (token) config.headers.Authorization = `Bearer ${token}`;
-  return config;
-});
-
-api.interceptors.response.use(
-  (r) => r,
-  (err) => {
-    if (err.response?.status === 401) {
-      localStorage.removeItem('token');
-      window.location.href = '/login';
+  const loadMappings = async () => {
+    setLoading(true);
+    try {
+      const { data } = await productsApi.getMappings();
+      setMappings(data);
+    } finally {
+      setLoading(false);
     }
-    return Promise.reject(err);
-  }
-);
+  };
 
-export const auth = {
-  login: (email, password) => api.post('/auth/login', { email, password }),
-  register: (email, password, name) => api.post('/auth/register', { email, password, name }),
-};
+  const openModal = async () => {
+    setShowModal(true);
+    setLoadingTN(true);
+    setLoadingML(true);
+    try {
+      const [tn, ml] = await Promise.all([productsApi.getTN(), productsApi.getML()]);
+      setTnProducts(tn.data);
+      setMlProducts(ml.data);
+    } catch (err) {
+      alert('Error al cargar productos: ' + (err.response?.data?.error || err.message));
+      setShowModal(false);
+    } finally {
+      setLoadingTN(false);
+      setLoadingML(false);
+    }
+  };
 
-export const stores = {
-  status: () => api.get('/stores/status'),
-  connectTN: (storeId, accessToken, storeName) =>
-    api.post('/stores/tiendanube', { storeId, accessToken, storeName }),
-  getMlAuthUrl: () => api.get('/stores/mercadolibre/url'),
-};
+  const handleSaveMapping = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      // Parsea la selección de TN (productId:variantId)
+      const [tnProductId, tnVariantId] = form.tnVariantKey.split(':');
+      const tnProduct = tnProducts.find(p => p.productId === tnProductId && p.variantId === tnVariantId);
+      const mlProduct = mlProducts.find(p => p.id === form.mlItemId);
 
-export const products = {
-  getTN: () => api.get('/products/tiendanube'),
-  getML: () => api.get('/products/mercadolibre'),
-  getMappings: () => api.get('/products/mappings'),
-  createMapping: (data) => api.post('/products/mappings', data),
-  deleteMapping: (id) => api.delete(`/products/mappings/${id}`),
-  syncAll: () => api.post('/products/sync/initial'),
-  syncOne: (id) => api.post(`/products/sync/${id}`),
-  getLogs: (id) => api.get(`/products/mappings/${id}/logs`),
-};
+      if (!tnProduct) return alert('Seleccioná un producto de Tiendanube');
+      if (!mlProduct) return alert('Seleccioná un producto de Mercado Libre');
+      if (!tnProduct.sku) return alert('El producto de TN no tiene SKU cargado');
 
-export const orders = {
-  list: (params) => api.get('/orders', { params }),
-  stats: () => api.get('/orders/stats/summary'),
-};
+      // Busca variación de MELI si aplica
+      let mlVariationId = null;
+      if (form.mlVariationId) {
+        mlVariationId = form.mlVariationId;
+      } else if (mlProduct.variations?.length === 1) {
+        mlVariationId = String(mlProduct.variations[0].id);
+      }
 
-export const catalog = {
-  download: (params) => api.get('/catalog', { params, responseType: 'blob' }),
-};
+      await productsApi.createMapping({
+        sku: tnProduct.sku,
+        tnProductId, tnVariantId,
+        tnProductName: tnProduct.productName,
+        mlItemId: form.mlItemId,
+        mlVariationId,
+        mlItemName: mlProduct.title,
+      });
 
-export default api;
+      setShowModal(false);
+      setForm({ tnVariantKey: '', mlItemId: '', mlVariationId: '' });
+      await loadMappings();
+    } catch (err) {
+      alert('Error al guardar: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm('¿Desactivar este mapeo?')) return;
+    await productsApi.deleteMapping(id);
+    loadMappings();
+  };
+
+  const handleSync = async (id) => {
+    setSyncingId(id);
+    try {
+      const { data } = await productsApi.syncOne(id);
+      setMappings(prev => prev.map(m => m.id === id ? { ...m, current_stock: data.stock, last_synced_at: new Date().toISOString() } : m));
+    } catch (err) {
+      alert('Error al sincronizar: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setSyncingId(null);
+    }
+  };
+
+  const handleSyncAll = async () => {
+    setSyncAllLoading(true);
+    setMsg('');
+    try {
+      const { data } = await productsApi.syncAll();
+      setMsg(`✅ ${data.synced} productos sincronizados${data.errors?.length ? ` · ${data.errors.length} errores` : ''}`);
+      await loadMappings();
+    } catch (err) {
+      setMsg('❌ ' + (err.response?.data?.error || err.message));
+    } finally {
+      setSyncAllLoading(false);
+    }
+  };
+
+  const toggleLogs = async (id) => {
+    if (expandedLogs === id) { setExpandedLogs(null); return; }
+    setExpandedLogs(id);
+    if (!logs[id]) {
+      const { data } = await productsApi.getLogs(id);
+      setLogs(prev => ({ ...prev, [id]: data }));
+    }
+  };
+
+  const [autoMatches, setAutoMatches] = useState([]);
+  const [showAutoModal, setShowAutoModal] = useState(false);
+  const [autoLoading, setAutoLoading] = useState(false);
+  const [selectedMatches, setSelectedMatches] = useState({});
+  const [approvingAuto, setApprovingAuto] = useState(false);
+  const [autoMsg, setAutoMsg] = useState('');
+
+  const handleAutoMatch = async () => {
+    setAutoLoading(true);
+    setAutoMsg('');
+    try {
+      const { data } = await productsApi.autoMatch();
+      if (data.total === 0) {
+        setAutoMsg('No se encontraron productos con SKU coincidente que no estén ya mapeados.');
+        return;
+      }
+      // Pre-selecciona todos los matches
+      const preSelected = {};
+      data.matches.forEach((m, i) => { preSelected[i] = true; });
+      setSelectedMatches(preSelected);
+      setAutoMatches(data.matches);
+      setShowAutoModal(true);
+    } catch (err) {
+      setAutoMsg('Error al buscar matches: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setAutoLoading(false);
+    }
+  };
+
+  const handleApproveAuto = async () => {
+    setApprovingAuto(true);
+    const toCreate = autoMatches.filter((_, i) => selectedMatches[i]);
+    let created = 0;
+    const errors = [];
+    for (const match of toCreate) {
+      try {
+        let mlVariationId = null;
+        if (match.ml.variations?.length === 1) {
+          mlVariationId = String(match.ml.variations[0].id);
+        }
+        await productsApi.createMapping({
+          sku: match.sku,
+          tnProductId: match.tn.productId,
+          tnVariantId: match.tn.variantId,
+          tnProductName: match.tn.productName,
+          mlItemId: match.ml.itemId,
+          mlVariationId,
+          mlItemName: match.ml.title,
+        });
+        created++;
+      } catch (err) {
+        errors.push(match.sku);
+      }
+    }
+    setApprovingAuto(false);
+    setShowAutoModal(false);
+    setAutoMsg(`✅ ${created} mapeos creados${errors.length ? ` · ${errors.length} errores en SKUs: ${errors.join(', ')}` : ''}`);
+    await loadMappings();
+  };
+
+  const toggleMatch = (i) => {
+    setSelectedMatches(prev => ({ ...prev, [i]: !prev[i] }));
+  };
+
+  return (
+    <div className="page">
+      <div className="flex-between page-header">
+        <div>
+          <h2>Sincronización de productos</h2>
+          <p>Conectá productos de TN con ítems de MELI por SKU</p>
+        </div>
+        <div className="flex gap-2">
+          <button className="btn btn-secondary" onClick={handleSyncAll} disabled={syncAllLoading || mappings.length === 0}>
+            <RefreshCw size={14} />
+            {syncAllLoading ? 'Sincronizando...' : 'Sync TN → MELI'}
+          </button>
+          <button className="btn btn-success" onClick={handleAutoMatch} disabled={autoLoading}>
+            <Zap size={14} />
+            {autoLoading ? 'Buscando...' : 'Auto-mapear por SKU'}
+          </button>
+            <Plus size={14} /> Agregar mapeo
+          </button>
+        </div>
+      </div>
+
+      {msg && (
+        <div className={`alert ${msg.startsWith('✅') ? 'alert-success' : 'alert-danger'}`} style={{ marginBottom: 16 }}>
+          {msg}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="flex gap-2" style={{ padding: '40px 0', justifyContent: 'center' }}>
+          <span className="spinner" /> Cargando...
+        </div>
+      ) : mappings.length === 0 ? (
+        <div className="card">
+          <div className="empty">
+            <div className="empty-icon"><Link2 size={36} strokeWidth={1.5} /></div>
+            <h3>No hay mapeos creados</h3>
+            <p>Conectá un producto de TN con uno de MELI para empezar a sincronizar</p>
+            <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={openModal}>
+              <Plus size={14} /> Crear primer mapeo
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="card" style={{ padding: 0 }}>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>SKU</th>
+                  <th>Producto TN</th>
+                  <th>Ítem MELI</th>
+                  <th>Stock actual</th>
+                  <th>Última sync</th>
+                  <th>Estado</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {mappings.map(m => (
+                  <>
+                    <tr key={m.id}>
+                      <td className="font-mono">{m.sku}</td>
+                      <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {m.tn_product_name || '-'}
+                      </td>
+                      <td style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text2)' }}>
+                        {m.ml_item_name || '-'}
+                      </td>
+                      <td>
+                        <span className={`badge ${m.current_stock === 0 ? 'badge-red' : m.current_stock <= 3 ? 'badge-yellow' : 'badge-green'}`}>
+                          {m.current_stock !== null ? `${m.current_stock} u.` : '-'}
+                        </span>
+                      </td>
+                      <td style={{ color: 'var(--text2)', fontSize: 12.5 }}>
+                        {m.last_synced_at ? new Date(m.last_synced_at).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : 'Nunca'}
+                      </td>
+                      <td>
+                        <span className={`badge ${m.is_active ? 'badge-green' : 'badge-gray'}`}>
+                          {m.is_active ? 'Activo' : 'Inactivo'}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="flex gap-2">
+                          <button className="btn-icon" title="Sincronizar ahora"
+                            onClick={() => handleSync(m.id)} disabled={syncingId === m.id}>
+                            <RefreshCw size={13} className={syncingId === m.id ? 'spin' : ''} />
+                          </button>
+                          <button className="btn-icon" title="Ver historial"
+                            onClick={() => toggleLogs(m.id)}>
+                            {expandedLogs === m.id ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                          </button>
+                          <button className="btn-icon" title="Desactivar"
+                            onClick={() => handleDelete(m.id)}
+                            style={{ color: 'var(--danger)' }}>
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                    {expandedLogs === m.id && (
+                      <tr key={`logs-${m.id}`}>
+                        <td colSpan={7} style={{ background: 'var(--surface2)', padding: '12px 16px' }}>
+                          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8, color: 'var(--text2)' }}>
+                            Historial de sincronización
+                          </div>
+                          {!logs[m.id] ? (
+                            <span className="spinner" style={{ width: 14, height: 14 }} />
+                          ) : logs[m.id].length === 0 ? (
+                            <span style={{ color: 'var(--text3)', fontSize: 12.5 }}>Sin historial aún</span>
+                          ) : (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              {logs[m.id].slice(0, 8).map(log => (
+                                <div key={log.id} className="flex gap-2" style={{ fontSize: 12.5 }}>
+                                  <span className={`badge badge-${log.event_type.includes('sale') ? 'yellow' : log.event_type === 'initial_sync' ? 'blue' : 'green'}`}>
+                                    {log.event_type}
+                                  </span>
+                                  <span style={{ color: 'var(--text2)' }}>
+                                    {log.previous_stock !== null ? `${log.previous_stock} → ` : ''}{log.new_stock} u.
+                                  </span>
+                                  {log.order_id && <span style={{ color: 'var(--text3)' }}>Orden #{log.order_id}</span>}
+                                  <span style={{ color: 'var(--text3)', marginLeft: 'auto' }}>
+                                    {new Date(log.created_at).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {autoMsg && (
+        <div className={`alert ${autoMsg.startsWith('✅') ? 'alert-success' : 'alert-warning'}`} style={{ marginBottom: 16 }}>
+          {autoMsg}
+        </div>
+      )}
+
+      {/* Modal de revisión de auto-mapeo */}
+      {showAutoModal && (
+        <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setShowAutoModal(false)}>
+          <div className="modal" style={{ maxWidth: 720 }}>
+            <div className="modal-header">
+              <div>
+                <h3>Revisar auto-mapeo por SKU</h3>
+                <div style={{ fontSize: 13, color: 'var(--text2)', marginTop: 3 }}>
+                  Se encontraron <strong>{autoMatches.length}</strong> coincidencias. Revisá, destildá las que no quieras y aprobá.
+                </div>
+              </div>
+              <button className="btn-icon" onClick={() => setShowAutoModal(false)}>✕</button>
+            </div>
+            <div className="modal-body" style={{ padding: '0' }}>
+              <div className="alert alert-info" style={{ margin: '16px 24px 0', fontSize: 13 }}>
+                ✅ Los que están tildados se van a mapear. Destildá cualquiera que no te parezca correcto antes de aprobar.
+              </div>
+              <div className="table-wrap" style={{ maxHeight: 400, overflowY: 'auto' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th style={{ width: 40 }}>
+                        <input type="checkbox"
+                          checked={Object.values(selectedMatches).every(Boolean)}
+                          onChange={e => {
+                            const all = {};
+                            autoMatches.forEach((_, i) => all[i] = e.target.checked);
+                            setSelectedMatches(all);
+                          }} />
+                      </th>
+                      <th>SKU</th>
+                      <th>Producto TN</th>
+                      <th>Stock TN</th>
+                      <th>Ítem MELI</th>
+                      <th>Stock MELI</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {autoMatches.map((match, i) => (
+                      <tr key={i} style={{ opacity: selectedMatches[i] ? 1 : 0.4 }}>
+                        <td>
+                          <input type="checkbox"
+                            checked={!!selectedMatches[i]}
+                            onChange={() => toggleMatch(i)} />
+                        </td>
+                        <td className="font-mono">{match.sku}</td>
+                        <td style={{ fontSize: 12.5 }}>
+                          {match.tn.productName}
+                          {match.tn.values?.length > 0 && (
+                            <div style={{ color: 'var(--text3)', fontSize: 11 }}>
+                              {match.tn.values.map(v => v.es || Object.values(v)[0]).join(' / ')}
+                            </div>
+                          )}
+                        </td>
+                        <td>
+                          <span className={`badge ${match.tn.stock === 0 ? 'badge-red' : match.tn.stock <= 3 ? 'badge-yellow' : 'badge-green'}`}>
+                            {match.tn.stock !== null ? match.tn.stock : '∞'}
+                          </span>
+                        </td>
+                        <td style={{ fontSize: 12.5, color: 'var(--text2)' }}>
+                          {match.ml.title?.substring(0, 35)}{match.ml.title?.length > 35 ? '...' : ''}
+                        </td>
+                        <td>
+                          <span className={`badge ${match.ml.stock === 0 ? 'badge-red' : 'badge-gray'}`}>
+                            {match.ml.stock}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <div style={{ fontSize: 13, color: 'var(--text2)', marginRight: 'auto' }}>
+                {Object.values(selectedMatches).filter(Boolean).length} de {autoMatches.length} seleccionados
+              </div>
+              <button className="btn btn-secondary" onClick={() => setShowAutoModal(false)}>Cancelar</button>
+              <button className="btn btn-primary" onClick={handleApproveAuto} disabled={approvingAuto || Object.values(selectedMatches).every(v => !v)}>
+                {approvingAuto
+                  ? <><span className="spinner" style={{ borderColor: 'rgba(255,255,255,0.3)', borderTopColor: 'white', width: 14, height: 14 }} /> Creando mapeos...</>
+                  : `✅ Aprobar ${Object.values(selectedMatches).filter(Boolean).length} mapeos`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showModal && (
+        <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setShowModal(false)}>
+          <div className="modal">
+            <div className="modal-header">
+              <h3>Nuevo mapeo de producto</h3>
+              <button className="btn-icon" onClick={() => setShowModal(false)}>✕</button>
+            </div>
+            <form onSubmit={handleSaveMapping}>
+              <div className="modal-body">
+                <div className="alert alert-info" style={{ marginBottom: 16, fontSize: 13 }}>
+                  La conexión se hace por SKU. Elegí la variante de TN y el ítem de MELI que corresponden al mismo producto.
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Variante de Tiendanube</label>
+                  {loadingTN ? (
+                    <div className="flex gap-2"><span className="spinner" style={{ width: 16, height: 16 }} /> Cargando productos...</div>
+                  ) : (
+                    <select className="form-input" required value={form.tnVariantKey}
+                      onChange={e => setForm(f => ({ ...f, tnVariantKey: e.target.value }))}>
+                      <option value="">— Seleccioná un producto —</option>
+                      {tnProducts.map(p => (
+                        <option key={`${p.productId}:${p.variantId}`} value={`${p.productId}:${p.variantId}`}>
+                          {p.productName} {p.values?.length ? `(${p.values.map(v => v.es || Object.values(v)[0]).join(' / ')})` : ''} · SKU: {p.sku || 'Sin SKU'} · Stock: {p.stock !== null ? p.stock : '∞'}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {selectedTnProduct && !selectedTnProduct.sku && (
+                    <div className="alert alert-warning" style={{ marginTop: 8, fontSize: 12.5 }}>
+                      ⚠️ Esta variante no tiene SKU. Cargá un SKU en Tiendanube primero.
+                    </div>
+                  )}
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Ítem de Mercado Libre</label>
+                  {loadingML ? (
+                    <div className="flex gap-2"><span className="spinner" style={{ width: 16, height: 16 }} /> Cargando ítems...</div>
+                  ) : (
+                    <select className="form-input" required value={form.mlItemId}
+                      onChange={e => setForm(f => ({ ...f, mlItemId: e.target.value, mlVariationId: '' }))}>
+                      <option value="">— Seleccioná un ítem —</option>
+                      {mlProducts.map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.title} · SKU: {p.sku || 'Sin SKU'} · Stock: {p.stock}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                {/* Variaciones de MELI si tiene */}
+                {form.mlItemId && mlProducts.find(p => p.id === form.mlItemId)?.variations?.length > 1 && (
+                  <div className="form-group">
+                    <label className="form-label">Variación de Mercado Libre</label>
+                    <select className="form-input" value={form.mlVariationId}
+                      onChange={e => setForm(f => ({ ...f, mlVariationId: e.target.value }))}>
+                      <option value="">— Seleccioná la variación —</option>
+                      {mlProducts.find(p => p.id === form.mlItemId)?.variations?.map(v => (
+                        <option key={v.id} value={String(v.id)}>
+                          {v.attribute_combinations?.map(a => a.value_name).join(' / ') || `Variación ${v.id}`} · Stock: {v.available_quantity}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={saving}>
+                  {saving ? <><span className="spinner" style={{ borderColor: 'rgba(255,255,255,0.3)', borderTopColor: 'white', width: 14, height: 14 }} /> Guardando...</> : 'Guardar mapeo'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
