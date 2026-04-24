@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { products as productsApi } from '../lib/api';
-import { Plus, Trash2, RefreshCw, Link2, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, Trash2, RefreshCw, Link2, ChevronDown, ChevronUp, Zap } from 'lucide-react';
 
 export default function Mappings() {
   const [mappings, setMappings] = useState([]);
@@ -128,7 +128,69 @@ export default function Mappings() {
     }
   };
 
-  const selectedTnProduct = tnProducts.find(p => `${p.productId}:${p.variantId}` === form.tnVariantKey);
+  const [autoMatches, setAutoMatches] = useState([]);
+  const [showAutoModal, setShowAutoModal] = useState(false);
+  const [autoLoading, setAutoLoading] = useState(false);
+  const [selectedMatches, setSelectedMatches] = useState({});
+  const [approvingAuto, setApprovingAuto] = useState(false);
+  const [autoMsg, setAutoMsg] = useState('');
+
+  const handleAutoMatch = async () => {
+    setAutoLoading(true);
+    setAutoMsg('');
+    try {
+      const { data } = await productsApi.autoMatch();
+      if (data.total === 0) {
+        setAutoMsg('No se encontraron productos con SKU coincidente que no estén ya mapeados.');
+        return;
+      }
+      // Pre-selecciona todos los matches
+      const preSelected = {};
+      data.matches.forEach((m, i) => { preSelected[i] = true; });
+      setSelectedMatches(preSelected);
+      setAutoMatches(data.matches);
+      setShowAutoModal(true);
+    } catch (err) {
+      setAutoMsg('Error al buscar matches: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setAutoLoading(false);
+    }
+  };
+
+  const handleApproveAuto = async () => {
+    setApprovingAuto(true);
+    const toCreate = autoMatches.filter((_, i) => selectedMatches[i]);
+    let created = 0;
+    const errors = [];
+    for (const match of toCreate) {
+      try {
+        let mlVariationId = null;
+        if (match.ml.variations?.length === 1) {
+          mlVariationId = String(match.ml.variations[0].id);
+        }
+        await productsApi.createMapping({
+          sku: match.sku,
+          tnProductId: match.tn.productId,
+          tnVariantId: match.tn.variantId,
+          tnProductName: match.tn.productName,
+          mlItemId: match.ml.itemId,
+          mlVariationId,
+          mlItemName: match.ml.title,
+        });
+        created++;
+      } catch (err) {
+        errors.push(match.sku);
+      }
+    }
+    setApprovingAuto(false);
+    setShowAutoModal(false);
+    setAutoMsg(`✅ ${created} mapeos creados${errors.length ? ` · ${errors.length} errores en SKUs: ${errors.join(', ')}` : ''}`);
+    await loadMappings();
+  };
+
+  const toggleMatch = (i) => {
+    setSelectedMatches(prev => ({ ...prev, [i]: !prev[i] }));
+  };
 
   return (
     <div className="page">
@@ -142,7 +204,10 @@ export default function Mappings() {
             <RefreshCw size={14} />
             {syncAllLoading ? 'Sincronizando...' : 'Sync TN → MELI'}
           </button>
-          <button className="btn btn-primary" onClick={openModal}>
+          <button className="btn btn-success" onClick={handleAutoMatch} disabled={autoLoading}>
+            <Zap size={14} />
+            {autoLoading ? 'Buscando...' : 'Auto-mapear por SKU'}
+          </button>
             <Plus size={14} /> Agregar mapeo
           </button>
         </div>
@@ -265,7 +330,99 @@ export default function Mappings() {
         </div>
       )}
 
-      {/* Modal de nuevo mapeo */}
+      {autoMsg && (
+        <div className={`alert ${autoMsg.startsWith('✅') ? 'alert-success' : 'alert-warning'}`} style={{ marginBottom: 16 }}>
+          {autoMsg}
+        </div>
+      )}
+
+      {/* Modal de revisión de auto-mapeo */}
+      {showAutoModal && (
+        <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setShowAutoModal(false)}>
+          <div className="modal" style={{ maxWidth: 720 }}>
+            <div className="modal-header">
+              <div>
+                <h3>Revisar auto-mapeo por SKU</h3>
+                <div style={{ fontSize: 13, color: 'var(--text2)', marginTop: 3 }}>
+                  Se encontraron <strong>{autoMatches.length}</strong> coincidencias. Revisá, destildá las que no quieras y aprobá.
+                </div>
+              </div>
+              <button className="btn-icon" onClick={() => setShowAutoModal(false)}>✕</button>
+            </div>
+            <div className="modal-body" style={{ padding: '0' }}>
+              <div className="alert alert-info" style={{ margin: '16px 24px 0', fontSize: 13 }}>
+                ✅ Los que están tildados se van a mapear. Destildá cualquiera que no te parezca correcto antes de aprobar.
+              </div>
+              <div className="table-wrap" style={{ maxHeight: 400, overflowY: 'auto' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th style={{ width: 40 }}>
+                        <input type="checkbox"
+                          checked={Object.values(selectedMatches).every(Boolean)}
+                          onChange={e => {
+                            const all = {};
+                            autoMatches.forEach((_, i) => all[i] = e.target.checked);
+                            setSelectedMatches(all);
+                          }} />
+                      </th>
+                      <th>SKU</th>
+                      <th>Producto TN</th>
+                      <th>Stock TN</th>
+                      <th>Ítem MELI</th>
+                      <th>Stock MELI</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {autoMatches.map((match, i) => (
+                      <tr key={i} style={{ opacity: selectedMatches[i] ? 1 : 0.4 }}>
+                        <td>
+                          <input type="checkbox"
+                            checked={!!selectedMatches[i]}
+                            onChange={() => toggleMatch(i)} />
+                        </td>
+                        <td className="font-mono">{match.sku}</td>
+                        <td style={{ fontSize: 12.5 }}>
+                          {match.tn.productName}
+                          {match.tn.values?.length > 0 && (
+                            <div style={{ color: 'var(--text3)', fontSize: 11 }}>
+                              {match.tn.values.map(v => v.es || Object.values(v)[0]).join(' / ')}
+                            </div>
+                          )}
+                        </td>
+                        <td>
+                          <span className={`badge ${match.tn.stock === 0 ? 'badge-red' : match.tn.stock <= 3 ? 'badge-yellow' : 'badge-green'}`}>
+                            {match.tn.stock !== null ? match.tn.stock : '∞'}
+                          </span>
+                        </td>
+                        <td style={{ fontSize: 12.5, color: 'var(--text2)' }}>
+                          {match.ml.title?.substring(0, 35)}{match.ml.title?.length > 35 ? '...' : ''}
+                        </td>
+                        <td>
+                          <span className={`badge ${match.ml.stock === 0 ? 'badge-red' : 'badge-gray'}`}>
+                            {match.ml.stock}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <div style={{ fontSize: 13, color: 'var(--text2)', marginRight: 'auto' }}>
+                {Object.values(selectedMatches).filter(Boolean).length} de {autoMatches.length} seleccionados
+              </div>
+              <button className="btn btn-secondary" onClick={() => setShowAutoModal(false)}>Cancelar</button>
+              <button className="btn btn-primary" onClick={handleApproveAuto} disabled={approvingAuto || Object.values(selectedMatches).every(v => !v)}>
+                {approvingAuto
+                  ? <><span className="spinner" style={{ borderColor: 'rgba(255,255,255,0.3)', borderTopColor: 'white', width: 14, height: 14 }} /> Creando mapeos...</>
+                  : `✅ Aprobar ${Object.values(selectedMatches).filter(Boolean).length} mapeos`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {showModal && (
         <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setShowModal(false)}>
           <div className="modal">
