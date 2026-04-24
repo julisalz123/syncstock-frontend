@@ -17,6 +17,12 @@ export default function Mappings() {
   const [logs, setLogs] = useState({});
   const [syncAllLoading, setSyncAllLoading] = useState(false);
   const [msg, setMsg] = useState('');
+  const [autoMatches, setAutoMatches] = useState([]);
+  const [showAutoModal, setShowAutoModal] = useState(false);
+  const [autoLoading, setAutoLoading] = useState(false);
+  const [selectedMatches, setSelectedMatches] = useState({});
+  const [approvingAuto, setApprovingAuto] = useState(false);
+  const [autoMsg, setAutoMsg] = useState('');
 
   useEffect(() => { loadMappings(); }, []);
 
@@ -28,6 +34,62 @@ export default function Mappings() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleAutoMatch = async () => {
+    setAutoLoading(true);
+    setAutoMsg('');
+    try {
+      const { data } = await productsApi.autoMatch();
+      if (data.total === 0) {
+        setAutoMsg('No se encontraron productos con SKU coincidente que no estén ya mapeados.');
+        return;
+      }
+      const preSelected = {};
+      data.matches.forEach((m, i) => { preSelected[i] = true; });
+      setSelectedMatches(preSelected);
+      setAutoMatches(data.matches);
+      setShowAutoModal(true);
+    } catch (err) {
+      setAutoMsg('Error al buscar matches: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setAutoLoading(false);
+    }
+  };
+
+  const handleApproveAuto = async () => {
+    setApprovingAuto(true);
+    const toCreate = autoMatches.filter((_, i) => selectedMatches[i]);
+    let created = 0;
+    const errors = [];
+    for (const match of toCreate) {
+      try {
+        let mlVariationId = null;
+        if (match.ml.variations?.length === 1) {
+          mlVariationId = String(match.ml.variations[0].id);
+        }
+        await productsApi.createMapping({
+          sku: match.sku,
+          tnProductId: match.tn.productId,
+          tnVariantId: match.tn.variantId,
+          tnProductName: match.tn.productName,
+          mlItemId: match.ml.itemId,
+          mlVariationId,
+          mlItemName: match.ml.title,
+        });
+        created++;
+      } catch (err) {
+        errors.push(match.sku);
+      }
+    }
+    setApprovingAuto(false);
+    setShowAutoModal(false);
+    setAutoMsg(`✅ ${created} mapeos creados${errors.length ? ` · ${errors.length} errores en SKUs: ${errors.join(', ')}` : ''}`);
+    await loadMappings();
+  };
+
+  const toggleMatch = (i) => {
+    setSelectedMatches(prev => ({ ...prev, [i]: !prev[i] }));
   };
 
   const openModal = async () => {
@@ -51,23 +113,18 @@ export default function Mappings() {
     e.preventDefault();
     setSaving(true);
     try {
-      // Parsea la selección de TN (productId:variantId)
       const [tnProductId, tnVariantId] = form.tnVariantKey.split(':');
       const tnProduct = tnProducts.find(p => p.productId === tnProductId && p.variantId === tnVariantId);
       const mlProduct = mlProducts.find(p => p.id === form.mlItemId);
-
       if (!tnProduct) return alert('Seleccioná un producto de Tiendanube');
       if (!mlProduct) return alert('Seleccioná un producto de Mercado Libre');
       if (!tnProduct.sku) return alert('El producto de TN no tiene SKU cargado');
-
-      // Busca variación de MELI si aplica
       let mlVariationId = null;
       if (form.mlVariationId) {
         mlVariationId = form.mlVariationId;
       } else if (mlProduct.variations?.length === 1) {
         mlVariationId = String(mlProduct.variations[0].id);
       }
-
       await productsApi.createMapping({
         sku: tnProduct.sku,
         tnProductId, tnVariantId,
@@ -76,7 +133,6 @@ export default function Mappings() {
         mlVariationId,
         mlItemName: mlProduct.title,
       });
-
       setShowModal(false);
       setForm({ tnVariantKey: '', mlItemId: '', mlVariationId: '' });
       await loadMappings();
@@ -128,69 +184,8 @@ export default function Mappings() {
     }
   };
 
-  const [autoMatches, setAutoMatches] = useState([]);
-  const [showAutoModal, setShowAutoModal] = useState(false);
-  const [autoLoading, setAutoLoading] = useState(false);
-  const [selectedMatches, setSelectedMatches] = useState({});
-  const [approvingAuto, setApprovingAuto] = useState(false);
-  const [autoMsg, setAutoMsg] = useState('');
-
-  const handleAutoMatch = async () => {
-    setAutoLoading(true);
-    setAutoMsg('');
-    try {
-      const { data } = await productsApi.autoMatch();
-      if (data.total === 0) {
-        setAutoMsg('No se encontraron productos con SKU coincidente que no estén ya mapeados.');
-        return;
-      }
-      // Pre-selecciona todos los matches
-      const preSelected = {};
-      data.matches.forEach((m, i) => { preSelected[i] = true; });
-      setSelectedMatches(preSelected);
-      setAutoMatches(data.matches);
-      setShowAutoModal(true);
-    } catch (err) {
-      setAutoMsg('Error al buscar matches: ' + (err.response?.data?.error || err.message));
-    } finally {
-      setAutoLoading(false);
-    }
-  };
-
-  const handleApproveAuto = async () => {
-    setApprovingAuto(true);
-    const toCreate = autoMatches.filter((_, i) => selectedMatches[i]);
-    let created = 0;
-    const errors = [];
-    for (const match of toCreate) {
-      try {
-        let mlVariationId = null;
-        if (match.ml.variations?.length === 1) {
-          mlVariationId = String(match.ml.variations[0].id);
-        }
-        await productsApi.createMapping({
-          sku: match.sku,
-          tnProductId: match.tn.productId,
-          tnVariantId: match.tn.variantId,
-          tnProductName: match.tn.productName,
-          mlItemId: match.ml.itemId,
-          mlVariationId,
-          mlItemName: match.ml.title,
-        });
-        created++;
-      } catch (err) {
-        errors.push(match.sku);
-      }
-    }
-    setApprovingAuto(false);
-    setShowAutoModal(false);
-    setAutoMsg(`✅ ${created} mapeos creados${errors.length ? ` · ${errors.length} errores en SKUs: ${errors.join(', ')}` : ''}`);
-    await loadMappings();
-  };
-
-  const toggleMatch = (i) => {
-    setSelectedMatches(prev => ({ ...prev, [i]: !prev[i] }));
-  };
+  const selectedTnProduct = tnProducts.find(p => `${p.productId}:${p.variantId}` === form.tnVariantKey);
+  const selectedCount = Object.values(selectedMatches).filter(Boolean).length;
 
   return (
     <div className="page">
@@ -200,14 +195,15 @@ export default function Mappings() {
           <p>Conectá productos de TN con ítems de MELI por SKU</p>
         </div>
         <div className="flex gap-2">
-          <button className="btn btn-secondary" onClick={handleSyncAll} disabled={syncAllLoading || mappings.length === 0}>
-            <RefreshCw size={14} />
-            {syncAllLoading ? 'Sincronizando...' : 'Sync TN → MELI'}
-          </button>
           <button className="btn btn-success" onClick={handleAutoMatch} disabled={autoLoading}>
             <Zap size={14} />
             {autoLoading ? 'Buscando...' : 'Auto-mapear por SKU'}
           </button>
+          <button className="btn btn-secondary" onClick={handleSyncAll} disabled={syncAllLoading || mappings.length === 0}>
+            <RefreshCw size={14} />
+            {syncAllLoading ? 'Sincronizando...' : 'Sync TN → MELI'}
+          </button>
+          <button className="btn btn-primary" onClick={openModal}>
             <Plus size={14} /> Agregar mapeo
           </button>
         </div>
@@ -216,6 +212,12 @@ export default function Mappings() {
       {msg && (
         <div className={`alert ${msg.startsWith('✅') ? 'alert-success' : 'alert-danger'}`} style={{ marginBottom: 16 }}>
           {msg}
+        </div>
+      )}
+
+      {autoMsg && (
+        <div className={`alert ${autoMsg.startsWith('✅') ? 'alert-success' : 'alert-warning'}`} style={{ marginBottom: 16 }}>
+          {autoMsg}
         </div>
       )}
 
@@ -228,10 +230,15 @@ export default function Mappings() {
           <div className="empty">
             <div className="empty-icon"><Link2 size={36} strokeWidth={1.5} /></div>
             <h3>No hay mapeos creados</h3>
-            <p>Conectá un producto de TN con uno de MELI para empezar a sincronizar</p>
-            <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={openModal}>
-              <Plus size={14} /> Crear primer mapeo
-            </button>
+            <p>Usá el auto-mapeo por SKU o agregá manualmente</p>
+            <div className="flex gap-2" style={{ justifyContent: 'center', marginTop: 16 }}>
+              <button className="btn btn-success" onClick={handleAutoMatch} disabled={autoLoading}>
+                <Zap size={14} /> Auto-mapear por SKU
+              </button>
+              <button className="btn btn-primary" onClick={openModal}>
+                <Plus size={14} /> Agregar manual
+              </button>
+            </div>
           </div>
         </div>
       ) : (
@@ -275,17 +282,13 @@ export default function Mappings() {
                       </td>
                       <td>
                         <div className="flex gap-2">
-                          <button className="btn-icon" title="Sincronizar ahora"
-                            onClick={() => handleSync(m.id)} disabled={syncingId === m.id}>
-                            <RefreshCw size={13} className={syncingId === m.id ? 'spin' : ''} />
+                          <button className="btn-icon" title="Sincronizar ahora" onClick={() => handleSync(m.id)} disabled={syncingId === m.id}>
+                            <RefreshCw size={13} />
                           </button>
-                          <button className="btn-icon" title="Ver historial"
-                            onClick={() => toggleLogs(m.id)}>
+                          <button className="btn-icon" title="Ver historial" onClick={() => toggleLogs(m.id)}>
                             {expandedLogs === m.id ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
                           </button>
-                          <button className="btn-icon" title="Desactivar"
-                            onClick={() => handleDelete(m.id)}
-                            style={{ color: 'var(--danger)' }}>
+                          <button className="btn-icon" title="Desactivar" onClick={() => handleDelete(m.id)} style={{ color: 'var(--danger)' }}>
                             <Trash2 size={13} />
                           </button>
                         </div>
@@ -294,31 +297,19 @@ export default function Mappings() {
                     {expandedLogs === m.id && (
                       <tr key={`logs-${m.id}`}>
                         <td colSpan={7} style={{ background: 'var(--surface2)', padding: '12px 16px' }}>
-                          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8, color: 'var(--text2)' }}>
-                            Historial de sincronización
-                          </div>
-                          {!logs[m.id] ? (
-                            <span className="spinner" style={{ width: 14, height: 14 }} />
-                          ) : logs[m.id].length === 0 ? (
-                            <span style={{ color: 'var(--text3)', fontSize: 12.5 }}>Sin historial aún</span>
-                          ) : (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                              {logs[m.id].slice(0, 8).map(log => (
-                                <div key={log.id} className="flex gap-2" style={{ fontSize: 12.5 }}>
-                                  <span className={`badge badge-${log.event_type.includes('sale') ? 'yellow' : log.event_type === 'initial_sync' ? 'blue' : 'green'}`}>
-                                    {log.event_type}
-                                  </span>
-                                  <span style={{ color: 'var(--text2)' }}>
-                                    {log.previous_stock !== null ? `${log.previous_stock} → ` : ''}{log.new_stock} u.
-                                  </span>
-                                  {log.order_id && <span style={{ color: 'var(--text3)' }}>Orden #{log.order_id}</span>}
-                                  <span style={{ color: 'var(--text3)', marginLeft: 'auto' }}>
-                                    {new Date(log.created_at).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          )}
+                          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8, color: 'var(--text2)' }}>Historial</div>
+                          {!logs[m.id] ? <span className="spinner" style={{ width: 14, height: 14 }} /> :
+                            logs[m.id].length === 0 ? <span style={{ color: 'var(--text3)', fontSize: 12.5 }}>Sin historial</span> :
+                            logs[m.id].slice(0, 8).map(log => (
+                              <div key={log.id} className="flex gap-2" style={{ fontSize: 12.5, marginBottom: 4 }}>
+                                <span className={`badge badge-${log.event_type.includes('sale') ? 'yellow' : 'blue'}`}>{log.event_type}</span>
+                                <span style={{ color: 'var(--text2)' }}>{log.previous_stock !== null ? `${log.previous_stock} → ` : ''}{log.new_stock} u.</span>
+                                <span style={{ color: 'var(--text3)', marginLeft: 'auto' }}>
+                                  {new Date(log.created_at).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                              </div>
+                            ))
+                          }
                         </td>
                       </tr>
                     )}
@@ -330,13 +321,7 @@ export default function Mappings() {
         </div>
       )}
 
-      {autoMsg && (
-        <div className={`alert ${autoMsg.startsWith('✅') ? 'alert-success' : 'alert-warning'}`} style={{ marginBottom: 16 }}>
-          {autoMsg}
-        </div>
-      )}
-
-      {/* Modal de revisión de auto-mapeo */}
+      {/* Modal auto-mapeo */}
       {showAutoModal && (
         <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setShowAutoModal(false)}>
           <div className="modal" style={{ maxWidth: 720 }}>
@@ -344,25 +329,25 @@ export default function Mappings() {
               <div>
                 <h3>Revisar auto-mapeo por SKU</h3>
                 <div style={{ fontSize: 13, color: 'var(--text2)', marginTop: 3 }}>
-                  Se encontraron <strong>{autoMatches.length}</strong> coincidencias. Revisá, destildá las que no quieras y aprobá.
+                  Se encontraron <strong>{autoMatches.length}</strong> coincidencias. Revisá y aprobá.
                 </div>
               </div>
               <button className="btn-icon" onClick={() => setShowAutoModal(false)}>✕</button>
             </div>
-            <div className="modal-body" style={{ padding: '0' }}>
+            <div className="modal-body" style={{ padding: 0 }}>
               <div className="alert alert-info" style={{ margin: '16px 24px 0', fontSize: 13 }}>
-                ✅ Los que están tildados se van a mapear. Destildá cualquiera que no te parezca correcto antes de aprobar.
+                Todos están tildados por defecto. Destildá los que no quieras antes de aprobar.
               </div>
-              <div className="table-wrap" style={{ maxHeight: 400, overflowY: 'auto' }}>
+              <div className="table-wrap" style={{ maxHeight: 380, overflowY: 'auto' }}>
                 <table>
                   <thead>
                     <tr>
                       <th style={{ width: 40 }}>
                         <input type="checkbox"
-                          checked={Object.values(selectedMatches).every(Boolean)}
+                          checked={autoMatches.length > 0 && autoMatches.every((_, i) => selectedMatches[i])}
                           onChange={e => {
                             const all = {};
-                            autoMatches.forEach((_, i) => all[i] = e.target.checked);
+                            autoMatches.forEach((_, i) => { all[i] = e.target.checked; });
                             setSelectedMatches(all);
                           }} />
                       </th>
@@ -376,11 +361,7 @@ export default function Mappings() {
                   <tbody>
                     {autoMatches.map((match, i) => (
                       <tr key={i} style={{ opacity: selectedMatches[i] ? 1 : 0.4 }}>
-                        <td>
-                          <input type="checkbox"
-                            checked={!!selectedMatches[i]}
-                            onChange={() => toggleMatch(i)} />
-                        </td>
+                        <td><input type="checkbox" checked={!!selectedMatches[i]} onChange={() => toggleMatch(i)} /></td>
                         <td className="font-mono">{match.sku}</td>
                         <td style={{ fontSize: 12.5 }}>
                           {match.tn.productName}
@@ -411,18 +392,20 @@ export default function Mappings() {
             </div>
             <div className="modal-footer">
               <div style={{ fontSize: 13, color: 'var(--text2)', marginRight: 'auto' }}>
-                {Object.values(selectedMatches).filter(Boolean).length} de {autoMatches.length} seleccionados
+                {selectedCount} de {autoMatches.length} seleccionados
               </div>
               <button className="btn btn-secondary" onClick={() => setShowAutoModal(false)}>Cancelar</button>
-              <button className="btn btn-primary" onClick={handleApproveAuto} disabled={approvingAuto || Object.values(selectedMatches).every(v => !v)}>
+              <button className="btn btn-primary" onClick={handleApproveAuto} disabled={approvingAuto || selectedCount === 0}>
                 {approvingAuto
-                  ? <><span className="spinner" style={{ borderColor: 'rgba(255,255,255,0.3)', borderTopColor: 'white', width: 14, height: 14 }} /> Creando mapeos...</>
-                  : `✅ Aprobar ${Object.values(selectedMatches).filter(Boolean).length} mapeos`}
+                  ? <><span className="spinner" style={{ borderColor: 'rgba(255,255,255,0.3)', borderTopColor: 'white', width: 14, height: 14 }} /> Creando...</>
+                  : `✅ Aprobar ${selectedCount} mapeos`}
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {/* Modal manual */}
       {showModal && (
         <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setShowModal(false)}>
           <div className="modal">
@@ -433,16 +416,12 @@ export default function Mappings() {
             <form onSubmit={handleSaveMapping}>
               <div className="modal-body">
                 <div className="alert alert-info" style={{ marginBottom: 16, fontSize: 13 }}>
-                  La conexión se hace por SKU. Elegí la variante de TN y el ítem de MELI que corresponden al mismo producto.
+                  Elegí la variante de TN y el ítem de MELI que corresponden al mismo producto.
                 </div>
-
                 <div className="form-group">
                   <label className="form-label">Variante de Tiendanube</label>
-                  {loadingTN ? (
-                    <div className="flex gap-2"><span className="spinner" style={{ width: 16, height: 16 }} /> Cargando productos...</div>
-                  ) : (
-                    <select className="form-input" required value={form.tnVariantKey}
-                      onChange={e => setForm(f => ({ ...f, tnVariantKey: e.target.value }))}>
+                  {loadingTN ? <div className="flex gap-2"><span className="spinner" style={{ width: 16, height: 16 }} /> Cargando...</div> : (
+                    <select className="form-input" required value={form.tnVariantKey} onChange={e => setForm(f => ({ ...f, tnVariantKey: e.target.value }))}>
                       <option value="">— Seleccioná un producto —</option>
                       {tnProducts.map(p => (
                         <option key={`${p.productId}:${p.variantId}`} value={`${p.productId}:${p.variantId}`}>
@@ -452,19 +431,13 @@ export default function Mappings() {
                     </select>
                   )}
                   {selectedTnProduct && !selectedTnProduct.sku && (
-                    <div className="alert alert-warning" style={{ marginTop: 8, fontSize: 12.5 }}>
-                      ⚠️ Esta variante no tiene SKU. Cargá un SKU en Tiendanube primero.
-                    </div>
+                    <div className="alert alert-warning" style={{ marginTop: 8, fontSize: 12.5 }}>⚠️ Sin SKU en TN</div>
                   )}
                 </div>
-
                 <div className="form-group">
                   <label className="form-label">Ítem de Mercado Libre</label>
-                  {loadingML ? (
-                    <div className="flex gap-2"><span className="spinner" style={{ width: 16, height: 16 }} /> Cargando ítems...</div>
-                  ) : (
-                    <select className="form-input" required value={form.mlItemId}
-                      onChange={e => setForm(f => ({ ...f, mlItemId: e.target.value, mlVariationId: '' }))}>
+                  {loadingML ? <div className="flex gap-2"><span className="spinner" style={{ width: 16, height: 16 }} /> Cargando...</div> : (
+                    <select className="form-input" required value={form.mlItemId} onChange={e => setForm(f => ({ ...f, mlItemId: e.target.value, mlVariationId: '' }))}>
                       <option value="">— Seleccioná un ítem —</option>
                       {mlProducts.map(p => (
                         <option key={p.id} value={p.id}>
@@ -474,13 +447,10 @@ export default function Mappings() {
                     </select>
                   )}
                 </div>
-
-                {/* Variaciones de MELI si tiene */}
                 {form.mlItemId && mlProducts.find(p => p.id === form.mlItemId)?.variations?.length > 1 && (
                   <div className="form-group">
                     <label className="form-label">Variación de Mercado Libre</label>
-                    <select className="form-input" value={form.mlVariationId}
-                      onChange={e => setForm(f => ({ ...f, mlVariationId: e.target.value }))}>
+                    <select className="form-input" value={form.mlVariationId} onChange={e => setForm(f => ({ ...f, mlVariationId: e.target.value }))}>
                       <option value="">— Seleccioná la variación —</option>
                       {mlProducts.find(p => p.id === form.mlItemId)?.variations?.map(v => (
                         <option key={v.id} value={String(v.id)}>
