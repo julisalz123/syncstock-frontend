@@ -21,16 +21,13 @@ export default function Orders() {
 
   const getStatusBadge = (status) => {
     const map = {
-      // Verde — pagado/completado
       paid: 'badge-green',
       fulfilled: 'badge-green',
       shipped: 'badge-green',
-      // Naranja — pendiente
       open: 'badge-yellow',
       pending: 'badge-yellow',
       payment_required: 'badge-yellow',
       payment_in_process: 'badge-yellow',
-      // Rojo — cancelado
       cancelled: 'badge-red',
       refunded: 'badge-red',
     };
@@ -128,16 +125,17 @@ export default function Orders() {
                                     background: 'var(--surface)', padding: '8px 12px',
                                     borderRadius: 6, border: '1px solid var(--border)'
                                   }}>
-                                    <div className="flex gap-2">
-                                      <div className="flex gap-2" style={{ alignItems: 'center' }}>
-  {item.image && (
-    <img src={item.image} alt={item.product_name}
-      style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)' }} />
-  )}
-  <span style={{ fontSize: 13, fontWeight: 500 }}>
-    {item.product_name || item.item_id || `Producto ${i + 1}`}
-  </span>
-</div>
+                                    <div className="flex gap-2" style={{ alignItems: 'center' }}>
+                                      {item.image && (
+                                        <img
+                                          src={item.image}
+                                          alt={item.product_name}
+                                          style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)' }}
+                                        />
+                                      )}
+                                      <span style={{ fontSize: 13, fontWeight: 500 }}>
+                                        {item.product_name || item.item_id || `Producto ${i + 1}`}
+                                      </span>
                                       {item.sku && (
                                         <span className="font-mono" style={{ fontSize: 11, color: 'var(--text3)' }}>
                                           SKU: {item.sku}
