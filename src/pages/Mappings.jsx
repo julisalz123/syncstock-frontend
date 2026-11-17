@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import { products as productsApi } from '../lib/api';
 import { Plus, Trash2, RefreshCw, Link2, ChevronDown, ChevronUp, Zap } from 'lucide-react';
 
+// true cuando esta pantalla lanzó una sync general, para recargar la lista al terminar
+let syncSeguido = false;
+
 export default function Mappings() {
   const [mappings, setMappings] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -17,6 +20,7 @@ export default function Mappings() {
   const [logs, setLogs] = useState({});
   const [syncAllLoading, setSyncAllLoading] = useState(false);
   const [msg, setMsg] = useState('');
+  const [pollTick, setPollTick] = useState(0);
   const [autoMatches, setAutoMatches] = useState([]);
   const [showAutoModal, setShowAutoModal] = useState(false);
   const [autoLoading, setAutoLoading] = useState(false);
@@ -25,6 +29,36 @@ export default function Mappings() {
   const [autoMsg, setAutoMsg] = useState('');
 
   useEffect(() => { loadMappings(); }, []);
+
+  // Muestra el estado de la sincronización general y, si está corriendo, revisa cada 15s hasta que termine
+  const textoEstado = (e) => {
+    const hora = (d) => new Date(d).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    if (e.estado === 'corriendo') return '⏳ Sincronizando TN → MELI... tarda unos minutos, podés cerrar la página.';
+    if (e.estado === 'terminado') return `✅ Última sincronización (${hora(e.fin)}): ${e.synced} sincronizados${e.errores ? ` · ${e.errores} con error` : ''}`;
+    if (e.estado === 'error') return `❌ La última sincronización falló (${hora(e.fin)}): ${e.error}`;
+    return '';
+  };
+
+  useEffect(() => {
+    let cancelado = false;
+    let timer = null;
+    const revisar = async () => {
+      try {
+        const { data } = await productsApi.syncStatus();
+        if (cancelado) return;
+        setMsg(textoEstado(data));
+        setSyncAllLoading(data.estado === 'corriendo');
+        if (data.estado === 'corriendo') {
+          timer = setTimeout(revisar, 15000);
+        } else if (syncSeguido) {
+          syncSeguido = false;
+          loadMappings();
+        }
+      } catch { /* si falla la consulta de estado, no pasa nada */ }
+    };
+    revisar();
+    return () => { cancelado = true; if (timer) clearTimeout(timer); };
+  }, [pollTick]);
 
   const loadMappings = async () => {
     setLoading(true);
@@ -166,11 +200,16 @@ export default function Mappings() {
     setMsg('');
     try {
       const { data } = await productsApi.syncAll();
-      setMsg(data.started ? `✅ ${data.message}` : `✅ ${data.synced} productos sincronizados${data.errors?.length ? ` · ${data.errors.length} errores` : ''}`);
-      await loadMappings();
+      if (data.started) {
+        syncSeguido = true;
+        setPollTick((t) => t + 1); // empieza a revisar el estado hasta que termine
+      } else {
+        setMsg(`✅ ${data.synced} productos sincronizados${data.errors?.length ? ` · ${data.errors.length} errores` : ''}`);
+        await loadMappings();
+        setSyncAllLoading(false);
+      }
     } catch (err) {
       setMsg('❌ ' + (err.response?.data?.error || err.message));
-    } finally {
       setSyncAllLoading(false);
     }
   };
@@ -210,7 +249,7 @@ export default function Mappings() {
       </div>
 
       {msg && (
-        <div className={`alert ${msg.startsWith('✅') ? 'alert-success' : 'alert-danger'}`} style={{ marginBottom: 16 }}>
+        <div className={`alert ${msg.startsWith('❌') ? 'alert-danger' : 'alert-success'}`} style={{ marginBottom: 16 }}>
           {msg}
         </div>
       )}

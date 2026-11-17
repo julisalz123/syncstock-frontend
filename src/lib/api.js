@@ -41,6 +41,7 @@ export const products = {
   createMapping: (data) => api.post('/products/mappings', data),
   deleteMapping: (id) => api.delete(`/products/mappings/${id}`),
   syncAll: () => api.post('/products/sync/initial'),
+  syncStatus: () => api.get('/products/sync/status'),
   syncOne: (id) => api.post(`/products/sync/${id}`),
   getLogs: (id) => api.get(`/products/mappings/${id}/logs`),
   autoMatch: () => api.get('/products/automatch'),
