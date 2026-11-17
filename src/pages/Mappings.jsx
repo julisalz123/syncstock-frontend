@@ -166,7 +166,7 @@ export default function Mappings() {
     setMsg('');
     try {
       const { data } = await productsApi.syncAll();
-      setMsg(`✅ ${data.synced} productos sincronizados${data.errors?.length ? ` · ${data.errors.length} errores` : ''}`);
+      setMsg(data.started ? `✅ ${data.message}` : `✅ ${data.synced} productos sincronizados${data.errors?.length ? ` · ${data.errors.length} errores` : ''}`);
       await loadMappings();
     } catch (err) {
       setMsg('❌ ' + (err.response?.data?.error || err.message));
